@@ -128,6 +128,8 @@ class HandlerManager {
     if (e.cancelable) e.preventDefault();
     let transformSettings;
     let activeHandlers = [];
+    let preUpdateEvents = [];
+    let postUpdateEvents = [];
 
     for (const [name, handler] of this._handlers) {
       if (!handler.isEnabled()) continue;
@@ -141,94 +143,79 @@ class HandlerManager {
           continue;
         }
       }
-      // validate the update request
+
       if (data.transform) {
         const merged = data.transform
         if (!!transformSettings) extend(merged, transformSettings)
         transformSettings = merged;
       }
+
+      if (data.events) {
+        for (const event of data.events) {
+          if (event.endsWith('start') {
+            if (preUpdateEvents.indexOf(event) < 0) preUpdateEvents.push(event);
+          } else if (postUpdateEvents.indexOf(event) < 0) {
+            postUpdateEvents.push(event);
+          }
+        }
+      }
       activeHandlers.push(name);
     }
 
-    if (transformSettings) this.updateAndFire(transformSettings, e);
-    // if (eventsToFire.length > 0) this.fireMapEvents(eventsToFire, e);
+    if (preUpdateEvents.length > 0) this._fireMapEvents(preUpdateEvents, e); // movestart events
+    if (transformSettings) this.updateMapTransform(transformSettings);
+    if (postUpdateEvents.length > 0) this.fireMapEvents(eventsToFire, e); // move and moveend events
   }
 
-  updateAndFire(settings, originalEvent) {
-    const eventsToFire = {
-      zoom: false,
-      rotate: false,
-      pitch: false,
-      drag: false
-    };
+  updateMapTransform(settings) {
     const tr = this._map.transform;
-
     let { zoomDelta, bearingDelta, pitchDelta, setLocationAtPoint } = settings;
-    if (zoomDelta) { tr.zoom += zoomDelta; eventsToFire['zoom'] = true; }
-    if (bearingDelta) { tr.bearing += bearingDelta; eventsToFire['rotate'] = true; }
-    if (pitchDelta) { tr.pitch += pitchDelta; eventsToFire['pitch'] = true; }
+    if (zoomDelta) tr.zoom += zoomDelta;
+    if (bearingDelta) tr.bearing += bearingDelta;
+    if (pitchDelta) tr.pitch += pitchDelta;
     if (setLocationAtPoint && setLocationAtPoint.length === 2) {
       let [loc, pt] = setLocationAtPoint;
       tr.setLocationAtPoint(loc, pt);
-      eventsToFire['drag'] = true;
     }
-
-    const [preUpdateEvents, postUpdateEvents] = this._computeEvents(eventsThisUpdate);
-    this._fireMapEvents(preUpdateEvents, originalEvent);
     this._map._update();
-    this._fireMapEvents(postUpdateEvents, originalEvent);
   }
 
-  _computeEvents(events) {
-    const preUpdateEvents = [];
-    const postUpdateEvents = [];
-    const movestart = true;
-    for (const eventType of ['zoom', 'rotate', 'pitch', 'drag']) {
-
-    }
-    // if we weren't already eventing this event, fire start & change event progress state
-    // if we are already eventing this event, fire move & no state change
-    // if we were eventing this event and now we're not, fire end & change event progress state
-    // return [preUpdateEvents, postUpdateEvents];
-  }
-
-  _firePreMoveEvents(events, originalEvent) {
-    // Start events should be fired before updating the map
-    const startEvents = [];
-    const movestart = true;
-    for (const event of ['zoom', 'rotate', 'pitch', 'drag']) {
-      const currentEvent = events[event];
-      const alreadyInProgress = this._eventsInProgress[event];
-
-      // If we're requesting this event
-
-      // If we're not requesting this event, but we were previously
-
-      if (alreadyInProgress) continue; // No start event needed
-
-
-      if (!this._eventsInProgress[event]) {
-        // If we need to event and we're not eventing already, fire start
-
-      } else {
-        // We are already doing some kind of move; no movestart event
-        movestart = false;
-      }
-    }
-    if (startEvents.length > 0) {
-      if (movestart) startEvents.push('movestart');
-      this.fireMapEvents(startEvents, originalEvent);
-    }
-  }
-
-  _firePostMoveEvents(events, originalEvent) {
-    // Move and End events should be fired after updating the map
+  get _moving() {
+    for (const e of ['zoom', 'rotate', 'pitch', 'drag']) { if (this._eventsInProgress[e]) return true; }
+    return false;
   }
 
   fireMapEvents(events, originalEvent) {
-    for (const eventType of events) {
-      this._map.fire(new Event(eventType, { originalEvent }));
+    const alreadyMoving = this._moving;
+    const moveEvents = [];
+    for (const event of events) {
+      const eventType = event.replace('start', '').replace('end', '');
+      if (event.endsWith('start')) {
+        if (this._eventsInProgress[eventType]) { continue; } // spurious start event, don't fire
+        else { this._eventsInProgress[eventType] = true; }
+        if (!alreadyMoving && moveEvents.indexOf('movestart') < 0) { moveEvents.push('movestart'); }
+
+      } else if (event.endsWith('end')) {
+        if (!this._eventsInProgress[eventType]) { continue; } // spurious end event, don't fire
+        else { this._eventsInProgress[eventType] = false; }
+        if (!this._moving && moveEvents.indexOf('moveend') < 0) { moveEvents.push('moveend'); }
+
+      } else {
+        if (!this._eventsInProgress[eventType]) {
+          // We never got a corresponding start event for some reason; fire it now & update event progress state
+          this._map.fire(new Event(eventType + 'start', { originalEvent }));
+          if (!alreadyMoving) {
+            this._map.fire(new Event('movestart', { originalEvent }));
+            alreadyMoving = true;
+          }
+          this._eventsInProgress[eventType] = true;
+        }
+        if (moveEvents.indexOf('move') < 0) { moveEvents.push('move'); }
+      }
+
+      this._map.fire(new Event(event, { originalEvent }));
     }
+    for (const moveEvent of moveEvents) this._map.fire(new Event(moveEvent, { originalEvent }));
   }
 }
 
